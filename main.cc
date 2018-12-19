@@ -8,6 +8,15 @@ using namespace std;
 using namespace cv;
 
 #define PROCESS_IMAGE
+#define WINDOW_NAME "CVUI Hello World!"
+
+#define CVUI_IMPLEMENTATION
+#include "cvui.h"
+
+double drand()
+{
+    return (double)rand() / (double)(RAND_MAX);
+}
 
 cv::Mat getSobel( cv::Mat input )
 {
@@ -38,6 +47,33 @@ cv::Mat getSobel( cv::Mat input )
 
 }
 
+void computeGradient( cv::Mat input, cv::Mat& grad_x_out, cv::Mat& grad_y_out )
+{
+
+    int scale = 1;
+    int delta = 0;
+    int ddepth = CV_16S;
+
+    /// Generate grad_x and grad_y
+    cv::Mat grad;
+    Mat grad_x, grad_y;
+    Mat abs_grad_x, abs_grad_y;
+
+    /// Gradient X
+    //Scharr( src_gray, grad_x, ddepth, 1, 0, scale, delta, BORDER_DEFAULT );
+    Sobel( input, grad_x, ddepth, 1, 0, 3, scale, delta, BORDER_DEFAULT );
+    cv::normalize( grad_x, grad_x_out, -1, 1, NORM_MINMAX, CV_32FC1);
+
+    /// Gradient Y
+    //Scharr( src_gray, grad_y, ddepth, 0, 1, scale, delta, BORDER_DEFAULT );
+    Sobel( input, grad_y, ddepth, 0, 1, 3, scale, delta, BORDER_DEFAULT );
+    cv::normalize( grad_y, grad_y_out, -1, 1, NORM_MINMAX, CV_32FC1);
+
+    //    blur( grad_x, grad_x, cv::Size(45,45) );
+    //    blur( grad_y, grad_y, cv::Size(45,45) );
+
+}
+
 double interp1( double instart, double instop, double outstart, double outstop, double in )
 {
     double in_span = (instop - instart);
@@ -46,44 +82,43 @@ double interp1( double instart, double instop, double outstart, double outstop, 
     return outstart + xx * out_span;
 }
 
-std::vector< cv::Point > columnToPoints( cv::Mat img, cv::Point startp, cv::Point endp, int space )
+std::vector< cv::Point2f > columnToPoints( cv::Mat img, cv::Mat grad_x, cv::Mat grad_y, cv::Point startp, cv::Point endp, double pointSpeed, double propSpeed )
 {
-    const int minSpace = space / 4;
-    const int maxSpace = space;
-
-    int curSpace = minSpace;
-    int curSum = 0;
-
     LineIterator it(img, startp, endp, 8);
-    std::vector< cv::Point > ret;
+    std::vector< cv::Point2f > ret;
 
+    Point2f curPos = Point2f( startp.x, startp.y );
     int k = 0;
-    for(int i = 0; i < it.count; i++, ++it)
+    while( k < 1000 )
     {
-        Point pt= it.pos();
-        uchar curval = (uchar)(**it);
-        // cerr << "curval=" << (int)curval << endl;
-        if( k >= curSpace )
+        //        cerr << "curPos=" << curPos << endl;
+        if( curPos.x < 0 || curPos.x > img.cols - 1 || curPos.y < 0 || curPos.y > img.rows - 1 )
+            break;
+
+        float gradVal_x = grad_x.at<float>( curPos );
+        float gradVal_y = grad_y.at<float>( curPos );
+
+        float gradVal = max( gradVal_x, gradVal_y );
+
+        //        if( gradVal_x <= 0.02 )
+        //        {
+        //            //            curPos.
+        //        }
+        //        else
         {
-            // output point
-            cv::Point np( startp.x, i );
-            ret.push_back( np );
-            // cerr << "np=" << np << endl;
-            // Compute new space
-            curSpace = interp1( 0, 255, minSpace, maxSpace, (double)curSum / (double)curSpace );
-            curSum = 0;
-            k = 0;
+            double ldist = ((double)startp.x - curPos.x);
+            // cerr << "ldist=" << ldist << endl;
+            curPos.x += ldist * propSpeed;
+            curPos.x += gradVal * pointSpeed;
         }
+        curPos.y += 1.0; // - gradVal_y;
+
+        if( !( curPos.x < 0 || curPos.x > img.cols - 1 || curPos.y < 0 || curPos.y > img.rows - 1 ) )
+            ret.push_back( curPos );
         ++k;
-        curSum += 255 - (int)curval;
     }
 
     return ret;
-}
-
-double drand()
-{
-    return (double)rand() / (double)(RAND_MAX);
 }
 
 int main( int argc, char** argv )
@@ -122,80 +157,78 @@ int main( int argc, char** argv )
 
     }
 #else
-    cv::Mat frame = cv::imread( argv[1] );
+    cv::Mat input = cv::imread( argv[1] );
+
+    // Create a frame where components will be rendered to.
+    cv::Mat frame = cv::Mat(200, 500, CV_8UC3);
+
+    // Init cvui and tell it to create a OpenCV window, i.e. cv::namedWindow(WINDOW_NAME).
+    cvui::init(WINDOW_NAME);
+
+    int stepx = 10;
+    double pointSpeed = 10.0;
+    double propSpeed = 0.01;
+
+    bool needUpdate = false;
+
+    cv::Mat frameg;
+    cv::Mat frameout = cv::Mat::zeros( input.rows, input.cols, CV_8UC1 );
+    cvtColor( input, frameg, CV_RGB2GRAY );
+
+    cv::Mat grad_x, grad_y;
+    computeGradient( frameg, grad_x, grad_y );
 
     while(true)
     {
-        cv::Mat frameg;
-        cv::Mat frameout = cv::Mat::zeros( frame.rows, frame.cols, CV_8UC1 );
 
-        cvtColor( frame, frameg, CV_RGB2GRAY );
-        cv::Mat sobimg = frameg.clone();
-        blur( sobimg, sobimg, cv::Size(37,37) );
-        imshow( "sob", sobimg );
+        // Fill the frame with a nice color
+        frame = cv::Scalar(49, 52, 49);
 
-        int spacex = 10;
-        int spacey = 10;
-
-        int iv_noise_max = 20;
-
-        for( int i = 0; i < frameg.cols; i += spacex )
+        // Render UI components to the frame
+        if( cvui::trackbar(frame, 5, 10, 240, &stepx, (int)1., (int)100.) )
         {
-            std::vector< Point > res = columnToPoints( frameg, Point(i,0), Point(i,frameg.rows), spacey );
-            for( Point p : res )
-            {
-
-                // Add noise according to intensity value ?
-                int iiv = (int)sobimg.at<uchar>( p );
-                int iv = 255 - iiv;
-                int x_noise = interp1( 0, 255, 1, iv_noise_max, iv ) * drand();
-                int y_noise = interp1( 0, 255, 1, iv_noise_max, iv ) * drand();
-
-                int x_offset = 0;
-                if( rand() % 4 == 0 )
-                    x_offset = -frameg.cols / 2 + rand() % frameg.cols * 2;
-
-                p.x += x_noise;
-                p.y += y_noise + x_offset;
-
-                // cv::circle( frameout, p, 3, Scalar(iiv,iiv,iiv) );
-                const int linew = rand() % 20 + 2;
-                for( int k = -linew / 2; k <= linew; ++k )
-                {
-                    Point pp = p;
-    //                if( rand() % 2 == 0 )
-                        p.x += k;
-    //                else
-    //                    p.x += k;
-                    if( pp.x >= 0 && pp.x < frameout.cols && pp.y >= 0 && pp.y < frameout.rows )
-                    {
-                        int iivl = (int)frameg.at<uchar>( p );
-                        frameout.at<uchar>( pp ) = (1 * iiv + 0 * iivl);
-                    }
-                }
-            }
+            needUpdate = true;
         }
 
-        cv::Mat frameout_blur;
-        cv::Mat result;
+        if( cvui::trackbar(frame, 5, 60, 240, &pointSpeed, 0., 100.) )
+        {
+            needUpdate = true;
+        }
 
-        /*
-        int blursize = max(spacex, spacey) * 2;
-        if(blursize % 2 == 0 )
-            blursize++;
-        GaussianBlur( frameout, frameout_blur, Size(blursize,blursize), 0 );
-        */
+        if( cvui::trackbar(frame, 5, 110, 240, &propSpeed, 0., 1.) )
+        {
+            needUpdate = true;
+        }
 
-        double pointRatio = 0.80;
-        cv::addWeighted( frameout, pointRatio, sobimg, 1.0 - pointRatio, 0, result, CV_8UC3 );
-        cv::normalize( result, result, 0, 255, NORM_MINMAX, CV_8UC1);
+        if (cvui::button(frame, 300, 80, "&Quit")) {
+            break;
+        }
 
-        imshow( "frame", frameg );
-        imshow( "out", result );
+        if( true )
+        {
+            cerr << "need update pointSpeed=" << pointSpeed << " stepx=" << stepx << endl;
+            frameout = cv::Mat::zeros( input.rows, input.cols, CV_8UC1 );
+            for( int i = 0; i < frameg.cols; i += stepx )
+            {
+                cv::Mat frameout_temp = cv::Mat::zeros( input.rows, input.cols, CV_8UC1 );
+                std::vector< Point2f > pret = columnToPoints( frameg, grad_x, grad_y, Point(i,0), Point(i,frameg.rows-1), pointSpeed, propSpeed );
+                std::vector< Point2f > pret2 = pret;
+                // cerr << "pret.Size()=" << pret.size() << endl;
+                //Option 1: use polylines
+                Mat curve(pret2, true);
+                curve.convertTo(curve, CV_32S); //adapt type for polylines
+                polylines(frameout, curve, false, Scalar(255), 1, CV_AA);
 
-        imwrite( "/tmp/out.png", result );
+            }
+            needUpdate = false;
+        }
 
-        cv::waitKey(5);
+        // Update cvui stuff and show everything on the screen
+        cvui::imshow(WINDOW_NAME, frame);
+
+        imshow( "frame", frameout );
+        cv::waitKey(20);
+
     }
 
 #endif
