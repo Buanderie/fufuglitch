@@ -13,6 +13,8 @@ using namespace cv;
 #define CVUI_IMPLEMENTATION
 #include "cvui.h"
 
+#include "arfilter.h"
+
 double drand()
 {
     return (double)rand() / (double)(RAND_MAX);
@@ -82,8 +84,10 @@ double interp1( double instart, double instop, double outstart, double outstop, 
     return outstart + xx * out_span;
 }
 
-std::vector< cv::Point2f > columnToPoints( cv::Mat img, cv::Mat grad_x, cv::Mat grad_y, cv::Point startp, cv::Point endp, double pointSpeed, double propSpeed )
+std::vector< cv::Point2f > columnToPoints( cv::Mat img, cv::Mat grad_x, cv::Mat grad_y, cv::Point startp, cv::Point endp, double pointSpeed, double propSpeed, double alphaFilter )
 {
+
+    ARFilter< double > arf( alphaFilter );
     LineIterator it(img, startp, endp, 8);
     std::vector< cv::Point2f > ret;
 
@@ -97,19 +101,17 @@ std::vector< cv::Point2f > columnToPoints( cv::Mat img, cv::Mat grad_x, cv::Mat 
 
         float gradVal_x = grad_x.at<float>( curPos );
         float gradVal_y = grad_y.at<float>( curPos );
+        float cVal = img.at<uchar>( curPos ) / 255;
+        float gradVal = max( max( gradVal_x, gradVal_y ), cVal );
 
-        float gradVal = max( gradVal_x, gradVal_y );
-
-        //        if( gradVal_x <= 0.02 )
-        //        {
-        //            //            curPos.
-        //        }
-        //        else
         {
+            double cPointSpeed = pointSpeed; // (cVal / 128.0) * pointSpeed;
             double ldist = ((double)startp.x - curPos.x);
             // cerr << "ldist=" << ldist << endl;
             curPos.x += ldist * propSpeed;
-            curPos.x += gradVal * pointSpeed;
+            curPos.x += (1.0 * gradVal) * cPointSpeed;
+            curPos.x = arf.update( curPos.x );
+//            curPos.x += -2 + drand() * 4.0;
         }
         curPos.y += 1.0; // - gradVal_y;
 
@@ -168,6 +170,7 @@ int main( int argc, char** argv )
     int stepx = 10;
     double pointSpeed = 10.0;
     double propSpeed = 0.01;
+    double alphaFilter = 0.2;
 
     bool needUpdate = false;
 
@@ -200,27 +203,35 @@ int main( int argc, char** argv )
             needUpdate = true;
         }
 
+        if( cvui::trackbar(frame, 5, 160, 240, &alphaFilter, 0., 1.) )
+        {
+            needUpdate = true;
+        }
+
         if (cvui::button(frame, 300, 80, "&Quit")) {
             break;
         }
 
+        double ratio = 0.1;
         if( true )
         {
             cerr << "need update pointSpeed=" << pointSpeed << " stepx=" << stepx << endl;
-            frameout = cv::Mat::zeros( input.rows, input.cols, CV_8UC1 );
+            frameout = cv::Mat::zeros( input.rows, input.cols, CV_32FC1 );
             for( int i = 0; i < frameg.cols; i += stepx )
             {
-                cv::Mat frameout_temp = cv::Mat::zeros( input.rows, input.cols, CV_8UC1 );
-                std::vector< Point2f > pret = columnToPoints( frameg, grad_x, grad_y, Point(i,0), Point(i,frameg.rows-1), pointSpeed, propSpeed );
+                cv::Mat frameout_temp = cv::Mat::zeros( input.rows, input.cols, CV_32FC1 );
+                std::vector< Point2f > pret = columnToPoints( frameg, grad_x, grad_y, Point(i,0), Point(i,frameg.rows-1), pointSpeed, propSpeed, alphaFilter );
                 std::vector< Point2f > pret2 = pret;
                 // cerr << "pret.Size()=" << pret.size() << endl;
                 //Option 1: use polylines
                 Mat curve(pret2, true);
                 curve.convertTo(curve, CV_32S); //adapt type for polylines
-                polylines(frameout, curve, false, Scalar(255), 1, CV_AA);
-
+                int dcenter_v = abs( i - frameg.cols / 2 );
+                polylines(frameout_temp, curve, false, Scalar( interp1( 0, frameg.cols / 2, 1.0, 0.25, dcenter_v ) ), 1, CV_AA);
+                frameout += frameout_temp;
             }
             needUpdate = false;
+            cv::normalize( frameout, frameout, 0, 255, NORM_MINMAX, CV_8UC1 );
         }
 
         // Update cvui stuff and show everything on the screen
